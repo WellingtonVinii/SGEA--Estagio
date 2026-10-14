@@ -17,7 +17,7 @@ export default class PedidoCompraController {
                 ? ""
                 : typeof req.query.busca === "string" ? req.query.busca.trim() : null;
             if (!situacao || busca === null || busca.length > 150) {
-                return res.status(400).json({ erro: "Informe uma busca válida e situação Todas, Pendente, Recebido ou Cancelado." });
+                return res.status(400).json({ erro: "Informe uma busca válida e situação Todas, Pendente, Parcialmente Recebido, Recebido ou Cancelado." });
             }
             return res.json(await this.#model.listar(this.#banco, situacao, busca));
         } catch (erro) { next(erro); }
@@ -89,15 +89,15 @@ export default class PedidoCompraController {
             const id = this.#id(req.params.id);
             const chaves = Object.keys(req.body ?? {});
             const situacao = req.body?.situacao;
-            if (!id || chaves.length !== 1 || chaves[0] !== "situacao" || !["Recebido", "Cancelado"].includes(situacao)) {
-                return res.status(400).json({ erro: "Informe a situação Recebido ou Cancelado." });
+            if (!id || chaves.length !== 1 || chaves[0] !== "situacao" || situacao !== "Cancelado") {
+                return res.status(400).json({ erro: "Informe a situação Cancelado." });
             }
 
             await this.#banco.AbreTransacao();
             transacaoAberta = true;
             const atual = await this.#model.buscarPorId(this.#banco, id, true);
             if (!atual) return await this.#rollbackResposta(res, 404, "Pedido de compra não encontrado.");
-            if (atual.situacao !== "Pendente") {
+            if (!["Pendente", "Parcialmente Recebido"].includes(atual.situacao)) {
                 return await this.#rollbackResposta(res, 409, `O pedido já está ${atual.situacao.toLowerCase()} e sua situação não pode mais ser alterada.`);
             }
             if (!await this.#model.alterarSituacao(this.#banco, id, situacao)) {
@@ -146,13 +146,26 @@ export default class PedidoCompraController {
         if (typeof valor !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(valor)) return null;
         const [ano, mes, dia] = valor.split("-").map(Number);
         const data = new Date(Date.UTC(ano, mes - 1, dia));
-        return ano >= 1000 && data.getUTCFullYear() === ano && data.getUTCMonth() === mes - 1 && data.getUTCDate() === dia
-            ? valor : null;
+        if (ano < 1000 || data.getUTCFullYear() !== ano || data.getUTCMonth() !== mes - 1 || data.getUTCDate() !== dia) {
+            return null;
+        }
+        return valor >= this.#umMesAtras() && valor <= this.#hoje() ? valor : null;
     }
 
     #hoje() {
         const hoje = new Date();
         return [hoje.getFullYear(), String(hoje.getMonth() + 1).padStart(2, "0"), String(hoje.getDate()).padStart(2, "0")].join("-");
+    }
+
+    #umMesAtras() {
+        const hoje = new Date();
+        const ultimoDiaMesAnterior = new Date(hoje.getFullYear(), hoje.getMonth(), 0).getDate();
+        const limite = new Date(
+            hoje.getFullYear(),
+            hoje.getMonth() - 1,
+            Math.min(hoje.getDate(), ultimoDiaMesAnterior)
+        );
+        return [limite.getFullYear(), String(limite.getMonth() + 1).padStart(2, "0"), String(limite.getDate()).padStart(2, "0")].join("-");
     }
 
     #observacao(valor) {
@@ -165,7 +178,7 @@ export default class PedidoCompraController {
     #situacaoFiltro(valor) {
         if (valor === undefined || valor === null || valor === "") return "Todas";
         if (typeof valor !== "string") return null;
-        const encontrada = ["Todas", "Pendente", "Recebido", "Cancelado"]
+        const encontrada = ["Todas", "Pendente", "Parcialmente Recebido", "Recebido", "Cancelado"]
             .find(item => item.toLowerCase() === valor.trim().toLowerCase());
         return encontrada ?? null;
     }

@@ -79,19 +79,31 @@ export default class PedidoCompraModel extends Entity {
     async listarItens(banco, pedidoId) {
         const rows = await banco.ExecutaComando(
             `SELECT ip.ProdutoId AS produtoId, p.Nome AS produtoNome,
-                    ip.Quantidade AS quantidade, p.Ativo AS produtoAtivo
+                    ip.Quantidade AS quantidade, p.Ativo AS produtoAtivo,
+                    COALESCE((
+                        SELECT SUM(ie.Quantidade)
+                          FROM Entrada e
+                          JOIN ItemEntrada ie ON ie.EntradaId = e.Id
+                          JOIN Lote l ON l.Id = ie.LoteId
+                         WHERE e.PedidoCompraId = ip.PedidoCompraId
+                           AND e.Situacao = 'Ativa'
+                           AND l.ProdutoId = ip.ProdutoId
+                    ), 0) AS quantidadeRecebida
                FROM ItemPedidoCompra ip
                JOIN Produto p ON p.Id = ip.ProdutoId
               WHERE ip.PedidoCompraId = ?
            ORDER BY p.Nome`,
             [pedidoId]
         );
-        return rows.map(row => ({
-            produtoId: Number(row.produtoId),
-            produtoNome: row.produtoNome,
-            quantidade: Number(row.quantidade),
-            produtoAtivo: Boolean(row.produtoAtivo)
-        }));
+        return rows.map(row => {
+            const quantidade = Number(row.quantidade);
+            const quantidadeRecebida = Number(row.quantidadeRecebida);
+            return {
+                produtoId: Number(row.produtoId), produtoNome: row.produtoNome,
+                quantidade, produtoAtivo: Boolean(row.produtoAtivo), quantidadeRecebida,
+                quantidadePendente: Math.max(0, quantidade - quantidadeRecebida)
+            };
+        });
     }
 
     async buscarProdutos(banco, ids) {
@@ -137,9 +149,25 @@ export default class PedidoCompraModel extends Entity {
 
     async alterarSituacao(banco, id, situacao) {
         return banco.ExecutaComandoNonQuery(
-            "UPDATE PedidoCompra SET Situacao = ? WHERE Id = ? AND Situacao = 'Pendente'",
+            "UPDATE PedidoCompra SET Situacao = ? WHERE Id = ? AND Situacao IN ('Pendente', 'Parcialmente Recebido')",
             [situacao, id]
         );
+    }
+
+    async atualizarSituacaoRecebimento(banco, id) {
+        const rows = await banco.ExecutaComando(
+            "SELECT Situacao AS situacao FROM PedidoCompra WHERE Id = ? FOR UPDATE",
+            [id]
+        );
+        if (!rows.length) return false;
+        if (rows[0].situacao === "Cancelado") return true;
+
+        const itens = await this.listarItens(banco, id);
+        const algumRecebido = itens.some(item => item.quantidadeRecebida > 0);
+        const todosRecebidos = itens.length > 0 && itens.every(item => item.quantidadeRecebida >= item.quantidade);
+        const situacao = todosRecebidos ? "Recebido" : algumRecebido ? "Parcialmente Recebido" : "Pendente";
+        await banco.ExecutaComandoNonQuery("UPDATE PedidoCompra SET Situacao = ? WHERE Id = ?", [situacao, id]);
+        return true;
     }
 
     toJSON() {

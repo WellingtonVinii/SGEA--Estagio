@@ -56,6 +56,8 @@ const itemPedidoCompra = {
         produtoId: { type: 'integer', minimum: 1, example: 1 },
         produtoNome: { type: 'string', example: 'Papel sulfite A4' },
         quantidade: { type: 'integer', minimum: 1, example: 10 },
+        quantidadeRecebida: { type: 'integer', minimum: 0, example: 4 },
+        quantidadePendente: { type: 'integer', minimum: 0, example: 6 },
         produtoAtivo: { type: 'boolean', example: true }
     }
 };
@@ -65,7 +67,7 @@ const pedidoCompra = {
     properties: {
         id: { type: 'integer', example: 1 },
         dataSolicitacao: { type: 'string', format: 'date', example: '2026-10-02' },
-        situacao: { type: 'string', enum: ['Pendente', 'Recebido', 'Cancelado'] },
+        situacao: { type: 'string', enum: ['Pendente', 'Parcialmente Recebido', 'Recebido', 'Cancelado'] },
         observacao: { type: 'string', nullable: true, maxLength: 255 },
         funcionarioId: { type: 'integer', example: 1 },
         funcionarioNome: { type: 'string', example: 'Maria da Silva' },
@@ -75,10 +77,48 @@ const pedidoCompra = {
     }
 };
 
+const entrada = {
+    type: 'object',
+    properties: {
+        id: { type: 'integer', example: 1 },
+        pedidoCompraId: { type: 'integer', example: 1 },
+        funcionarioId: { type: 'integer', example: 1 },
+        funcionarioNome: { type: 'string', example: 'Maria da Silva' },
+        dataEntrada: { type: 'string', format: 'date' },
+        observacao: { type: 'string', nullable: true, maxLength: 500 },
+        situacao: { type: 'string', enum: ['Ativa', 'Cancelada'] },
+        itens: { type: 'array', items: {
+            type: 'object', properties: {
+                id: { type: 'integer' }, produtoId: { type: 'integer' }, produtoNome: { type: 'string' },
+                quantidade: { type: 'integer', minimum: 1 }, loteId: { type: 'integer' },
+                codigoLote: { type: 'string' }, dataValidade: { type: 'string', format: 'date', nullable: true }
+            }
+        } }
+    }
+};
+
+const dadosEntrada = {
+    type: 'object', additionalProperties: false, required: ['pedidoCompraId', 'itens'],
+    properties: {
+        pedidoCompraId: { type: 'integer', minimum: 1 },
+        dataEntrada: { type: 'string', format: 'date', nullable: true, description: 'Entre um mês atrás e a data atual; no cadastro, a omissão usa a data atual.' },
+        observacao: { type: 'string', nullable: true, maxLength: 500 },
+        itens: { type: 'array', minItems: 1, items: {
+            type: 'object', additionalProperties: false, required: ['produtoId', 'quantidade'],
+            properties: {
+                produtoId: { type: 'integer', minimum: 1 }, quantidade: { type: 'integer', minimum: 1 },
+                loteId: { type: 'integer', minimum: 1, nullable: true },
+                codigoLote: { type: 'string', maxLength: 50, nullable: true },
+                dataValidade: { type: 'string', format: 'date', nullable: true }
+            }
+        } }
+    }
+};
+
 const dadosPedidoCompra = {
     type: 'object', additionalProperties: false, required: ['itens'],
     properties: {
-        dataSolicitacao: { type: 'string', format: 'date', nullable: true, description: 'Quando omitida no cadastro, recebe a data atual.' },
+        dataSolicitacao: { type: 'string', format: 'date', nullable: true, description: 'Deve estar entre um mês atrás e a data atual. Quando omitida no cadastro, recebe a data atual.' },
         observacao: { type: 'string', nullable: true, maxLength: 255 },
         itens: { type: 'array', minItems: 1, items: {
             type: 'object', additionalProperties: false, required: ['produtoId', 'quantidade'],
@@ -104,6 +144,7 @@ const idCategoria = parametroId('Id da categoria');
 const idProduto = parametroId('Id do produto');
 const idFuncionario = parametroId('Id do funcionário');
 const idPedido = parametroId('Id do pedido de compra');
+const idEntrada = parametroId('Id da entrada');
 
 export default {
     openapi: '3.0.3',
@@ -412,7 +453,7 @@ export default {
                 description: 'Disponível para ADM e Funcionário do Estoque.',
                 parameters: [
                     { name: 'busca', in: 'query', schema: { type: 'string', maxLength: 150 } },
-                    { name: 'situacao', in: 'query', schema: { type: 'string', enum: ['Todas', 'Pendente', 'Recebido', 'Cancelado'], default: 'Todas' } }
+                    { name: 'situacao', in: 'query', schema: { type: 'string', enum: ['Todas', 'Pendente', 'Parcialmente Recebido', 'Recebido', 'Cancelado'], default: 'Todas' } }
                 ],
                 responses: {
                     200: resposta('Pedidos encontrados', { type: 'array', items: pedidoCompra }),
@@ -455,11 +496,11 @@ export default {
         },
         '/pedidos/{id}/situacao': {
             patch: {
-                tags: ['Pedidos de compra'], summary: 'Receber ou cancelar pedido pendente', parameters: [idPedido],
-                description: 'Disponível para ADM e Funcionário do Estoque. Não registra entrada no estoque.',
+                tags: ['Pedidos de compra'], summary: 'Cancelar pedido pendente', parameters: [idPedido],
+                description: 'Disponível para ADM e Funcionário do Estoque. Esta rota realiza somente o cancelamento; o recebimento é atualizado automaticamente pelas entradas.',
                 requestBody: { required: true, content: { 'application/json': { schema: {
                     type: 'object', additionalProperties: false, required: ['situacao'],
-                    properties: { situacao: { type: 'string', enum: ['Recebido', 'Cancelado'] } }
+                    properties: { situacao: { type: 'string', enum: ['Cancelado'] } }
                 } } } },
                 responses: {
                     200: resposta('Situação alterada', pedidoCompra),
@@ -467,6 +508,48 @@ export default {
                     403: resposta('Perfil sem permissão', erro),
                     404: resposta('Pedido não encontrado', erro),
                     409: resposta('Pedido já finalizado', erro)
+                }
+            }
+        },
+        '/entradas': {
+            get: {
+                tags: ['Entradas'], summary: 'Listar entradas',
+                parameters: [
+                    { name: 'busca', in: 'query', schema: { type: 'string', maxLength: 150 } },
+                    { name: 'situacao', in: 'query', schema: { type: 'string', enum: ['Todas', 'Ativa', 'Cancelada'], default: 'Todas' } }
+                ],
+                responses: { 200: resposta('Entradas encontradas', { type: 'array', items: entrada }) }
+            },
+            post: {
+                tags: ['Entradas'], summary: 'Registrar entrada e atualizar os lotes',
+                description: 'Disponível para ADM e Funcionário do Estoque. Atualiza o estoque e a situação do pedido em uma única transação.',
+                requestBody: { required: true, content: { 'application/json': { schema: dadosEntrada } } },
+                responses: {
+                    201: resposta('Entrada registrada', entrada), 400: resposta('Dados inválidos', erro),
+                    404: resposta('Pedido não encontrado', erro), 409: resposta('Quantidade excedida', erro)
+                }
+            }
+        },
+        '/entradas/{id}': {
+            get: {
+                tags: ['Entradas'], summary: 'Consultar entrada', parameters: [idEntrada],
+                responses: { 200: resposta('Entrada encontrada', entrada), 404: resposta('Entrada não encontrada', erro) }
+            },
+            put: {
+                tags: ['Entradas'], summary: 'Alterar entrada e recalcular o estoque', parameters: [idEntrada],
+                requestBody: { required: true, content: { 'application/json': { schema: dadosEntrada } } },
+                responses: {
+                    200: resposta('Entrada alterada', entrada), 400: resposta('Dados inválidos', erro),
+                    404: resposta('Entrada não encontrada', erro), 409: resposta('Alteração incompatível com os saldos', erro)
+                }
+            }
+        },
+        '/entradas/{id}/cancelar': {
+            patch: {
+                tags: ['Entradas'], summary: 'Cancelar entrada e reverter o estoque', parameters: [idEntrada],
+                responses: {
+                    200: resposta('Entrada cancelada', entrada), 404: resposta('Entrada não encontrada', erro),
+                    409: resposta('Cancelamento deixaria saldo negativo', erro)
                 }
             }
         }
