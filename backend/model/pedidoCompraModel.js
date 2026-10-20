@@ -80,15 +80,7 @@ export default class PedidoCompraModel extends Entity {
         const rows = await banco.ExecutaComando(
             `SELECT ip.ProdutoId AS produtoId, p.Nome AS produtoNome,
                     ip.Quantidade AS quantidade, p.Ativo AS produtoAtivo,
-                    COALESCE((
-                        SELECT SUM(ie.Quantidade)
-                          FROM Entrada e
-                          JOIN ItemEntrada ie ON ie.EntradaId = e.Id
-                          JOIN Lote l ON l.Id = ie.LoteId
-                         WHERE e.PedidoCompraId = ip.PedidoCompraId
-                           AND e.Situacao = 'Ativa'
-                           AND l.ProdutoId = ip.ProdutoId
-                    ), 0) AS quantidadeRecebida
+                    ip.QuantidadeAtendida AS quantidadeRecebida
                FROM ItemPedidoCompra ip
                JOIN Produto p ON p.Id = ip.ProdutoId
               WHERE ip.PedidoCompraId = ?
@@ -100,7 +92,8 @@ export default class PedidoCompraModel extends Entity {
             const quantidadeRecebida = Number(row.quantidadeRecebida);
             return {
                 produtoId: Number(row.produtoId), produtoNome: row.produtoNome,
-                quantidade, produtoAtivo: Boolean(row.produtoAtivo), quantidadeRecebida,
+                quantidade, produtoAtivo: Boolean(row.produtoAtivo),
+                quantidadeAtendida: quantidadeRecebida, quantidadeRecebida,
                 quantidadePendente: Math.max(0, quantidade - quantidadeRecebida)
             };
         });
@@ -141,7 +134,9 @@ export default class PedidoCompraModel extends Entity {
     async inserirItens(banco, pedidoId, itens) {
         for (const item of itens) {
             await banco.ExecutaComandoNonQuery(
-                "INSERT INTO ItemPedidoCompra (PedidoCompraId, ProdutoId, Quantidade) VALUES (?, ?, ?)",
+                `INSERT INTO ItemPedidoCompra
+                    (PedidoCompraId, ProdutoId, Quantidade, QuantidadeAtendida)
+                 VALUES (?, ?, ?, 0)`,
                 [pedidoId, item.produtoId, item.quantidade]
             );
         }
@@ -155,13 +150,28 @@ export default class PedidoCompraModel extends Entity {
     }
 
     async atualizarSituacaoRecebimento(banco, id) {
+        if (!id) return true;
         const rows = await banco.ExecutaComando(
             "SELECT Situacao AS situacao FROM PedidoCompra WHERE Id = ? FOR UPDATE",
             [id]
         );
         if (!rows.length) return false;
-        if (rows[0].situacao === "Cancelado") return true;
 
+        await banco.ExecutaComandoNonQuery(
+            `UPDATE ItemPedidoCompra ip
+                SET ip.QuantidadeAtendida = LEAST(ip.Quantidade, COALESCE((
+                    SELECT SUM(ie.Quantidade)
+                      FROM Entrada e
+                      JOIN ItemEntrada ie ON ie.EntradaId = e.Id
+                      JOIN Lote l ON l.Id = ie.LoteId
+                     WHERE e.PedidoCompraId = ip.PedidoCompraId
+                       AND e.Situacao = 'Ativa'
+                       AND l.ProdutoId = ip.ProdutoId
+                ), 0))
+              WHERE ip.PedidoCompraId = ?`,
+            [id]
+        );
+        if (rows[0].situacao === "Cancelado") return true;
         const itens = await this.listarItens(banco, id);
         const algumRecebido = itens.some(item => item.quantidadeRecebida > 0);
         const todosRecebidos = itens.length > 0 && itens.every(item => item.quantidadeRecebida >= item.quantidade);

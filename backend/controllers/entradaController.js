@@ -66,7 +66,9 @@ export default class EntradaController {
             if (atualizacao.tipo !== "ok" || !await this.#model.cancelar(this.#banco, id)) {
                 throw new Error("Não foi possível cancelar a entrada.");
             }
-            await this.#pedidos.atualizarSituacaoRecebimento(this.#banco, entrada.pedidoCompraId);
+            if (entrada.pedidoCompraId) {
+                await this.#pedidos.atualizarSituacaoRecebimento(this.#banco, entrada.pedidoCompraId);
+            }
             await this.#banco.Commit();
             transacaoAberta = false;
             return res.json(await this.#model.buscarPorId(this.#banco, id));
@@ -79,7 +81,7 @@ export default class EntradaController {
             const dados = this.#dados(req.body, id === null);
             const funcionarioId = this.#inteiroPositivo(req.usuario?.funcionarioId);
             if (!dados || !funcionarioId) {
-                return res.status(400).json({ erro: "Informe pedido, data, observação e itens válidos para a entrada." });
+                return res.status(400).json({ erro: "Informe data, observação e itens válidos para a entrada." });
             }
 
             await this.#banco.AbreTransacao();
@@ -88,25 +90,28 @@ export default class EntradaController {
             if (id !== null && !atual) return await this.#rollbackResposta(res, 404, "Entrada não encontrada.");
             if (atual && atual.situacao !== "Ativa") return await this.#rollbackResposta(res, 409, "Entradas canceladas não podem ser alteradas.");
 
-            const idsPedidos = atual && atual.pedidoCompraId !== dados.pedidoCompraId
-                ? [atual.pedidoCompraId, dados.pedidoCompraId].sort((a, b) => a - b)
-                : [dados.pedidoCompraId];
+            const idsPedidos = [...new Set([atual?.pedidoCompraId, dados.pedidoCompraId]
+                .filter(pedidoId => pedidoId !== null && pedidoId !== undefined))].sort((a, b) => a - b);
             let pedido = null;
             for (const pedidoId of idsPedidos) {
                 const bloqueado = await this.#pedidos.buscarPorId(this.#banco, pedidoId, true);
                 if (pedidoId === dados.pedidoCompraId) pedido = bloqueado;
             }
-            if (!pedido) return await this.#rollbackResposta(res, 404, "Pedido de compra não encontrado.");
-            const alterandoPedidoAtual = atual?.pedidoCompraId === pedido.id;
-            const situacoesPermitidas = alterandoPedidoAtual
-                ? ["Pendente", "Parcialmente Recebido", "Recebido"]
-                : ["Pendente", "Parcialmente Recebido"];
-            if (!situacoesPermitidas.includes(pedido.situacao)) {
-                return await this.#rollbackResposta(res, 409, "Somente pedidos pendentes ou parcialmente recebidos podem receber novas entradas.");
+            if (dados.pedidoCompraId) {
+                if (!pedido) return await this.#rollbackResposta(res, 404, "Pedido de compra não encontrado.");
+                const alterandoPedidoAtual = atual?.pedidoCompraId === pedido.id;
+                const situacoesPermitidas = alterandoPedidoAtual
+                    ? ["Pendente", "Parcialmente Recebido", "Recebido"]
+                    : ["Pendente", "Parcialmente Recebido"];
+                if (!situacoesPermitidas.includes(pedido.situacao)) {
+                    return await this.#rollbackResposta(res, 409, "Somente pedidos pendentes ou parcialmente recebidos podem receber novas entradas.");
+                }
+                const erroQuantidade = await this.#validarQuantidadesPedido(pedido, dados.itens);
+                if (erroQuantidade) return await this.#rollbackResposta(res, 409, erroQuantidade);
+            } else {
+                const erroProdutos = await this.#validarProdutosAvulsos(dados.itens);
+                if (erroProdutos) return await this.#rollbackResposta(res, 409, erroProdutos);
             }
-
-            const erroQuantidade = await this.#validarQuantidadesPedido(pedido, dados.itens, id);
-            if (erroQuantidade) return await this.#rollbackResposta(res, 409, erroQuantidade);
 
             const resolvidos = await this.#resolverLotes(dados.itens);
             if (resolvidos.erro) return await this.#rollbackResposta(res, 400, resolvidos.erro);
@@ -132,10 +137,12 @@ export default class EntradaController {
             if (id === null) await this.#model.cadastrar(this.#banco, entrada);
             else await this.#model.atualizar(this.#banco, entrada);
 
-            if (atual && atual.pedidoCompraId !== entrada.pedidoCompraId) {
+            if (atual?.pedidoCompraId && atual.pedidoCompraId !== entrada.pedidoCompraId) {
                 await this.#pedidos.atualizarSituacaoRecebimento(this.#banco, atual.pedidoCompraId);
             }
-            await this.#pedidos.atualizarSituacaoRecebimento(this.#banco, entrada.pedidoCompraId);
+            if (entrada.pedidoCompraId) {
+                await this.#pedidos.atualizarSituacaoRecebimento(this.#banco, entrada.pedidoCompraId);
+            }
             await this.#banco.Commit();
             transacaoAberta = false;
             const salvo = await this.#model.buscarPorId(this.#banco, entrada.id);
@@ -143,16 +150,20 @@ export default class EntradaController {
         } catch (erro) { await this.#tratarErro(erro, transacaoAberta, res, next); }
     }
 
-    async #validarQuantidadesPedido(pedido, itens, entradaId) {
+    async #validarQuantidadesPedido(pedido, itens) {
         const solicitados = new Map(pedido.itens.map(item => [item.produtoId, item]));
-        const recebidos = await this.#model.recebidosPorPedido(this.#banco, pedido.id, entradaId);
-        for (const item of itens) {
-            const solicitado = solicitados.get(item.produtoId);
-            if (!solicitado) return "Um dos produtos não pertence ao pedido de compra selecionado.";
-            if ((recebidos.get(item.produtoId) ?? 0) + item.quantidade > solicitado.quantidade) {
-                return `A quantidade recebida de ${solicitado.produtoNome} excede a quantidade solicitada.`;
-            }
-        }
+        const extras = itens.filter(item => !solicitados.has(item.produtoId));
+        if (!extras.length) return null;
+        const produtos = await this.#pedidos.buscarProdutos(this.#banco, extras.map(item => item.produtoId));
+        if (produtos.length !== extras.length) return "Um dos produtos extras informados não existe.";
+        if (produtos.some(produto => !produto.ativo)) return "Somente produtos ativos podem ser adicionados como extras.";
+        return null;
+    }
+
+    async #validarProdutosAvulsos(itens) {
+        const produtos = await this.#pedidos.buscarProdutos(this.#banco, itens.map(item => item.produtoId));
+        if (produtos.length !== itens.length) return "Um dos produtos informados não existe.";
+        if (produtos.some(produto => !produto.ativo)) return "Entradas avulsas aceitam somente produtos ativos.";
         return null;
     }
 
@@ -179,11 +190,12 @@ export default class EntradaController {
     #dados(body, dataOpcional) {
         const permitidas = ["pedidoCompraId", "dataEntrada", "observacao", "itens"];
         if (!body || Object.keys(body).some(chave => !permitidas.includes(chave))) return null;
-        const pedidoCompraId = this.#inteiroPositivo(body.pedidoCompraId);
+        const pedidoAusente = body.pedidoCompraId === undefined || body.pedidoCompraId === null || body.pedidoCompraId === "";
+        const pedidoCompraId = pedidoAusente ? null : this.#inteiroPositivo(body.pedidoCompraId);
         const dataEntrada = this.#dataEntrada(body.dataEntrada, dataOpcional);
         const observacao = this.#observacao(body.observacao);
         const itens = this.#itens(body.itens);
-        return pedidoCompraId && dataEntrada && observacao !== undefined && itens
+        return (pedidoAusente || pedidoCompraId) && dataEntrada && observacao !== undefined && itens
             ? { pedidoCompraId, dataEntrada, observacao, itens } : null;
     }
 

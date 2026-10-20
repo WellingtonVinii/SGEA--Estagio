@@ -1,7 +1,7 @@
 import Entity from "./entity.js";
 
 export default class EntradaModel extends Entity {
-    constructor(id = 0, pedidoCompraId = 0, funcionarioId = 0, funcionarioNome = "", dataEntrada = "", observacao = null, situacao = "Ativa", itens = []) {
+    constructor(id = 0, pedidoCompraId = null, funcionarioId = 0, funcionarioNome = "", dataEntrada = "", observacao = null, situacao = "Ativa", itens = []) {
         super();
         this.id = id;
         this.pedidoCompraId = pedidoCompraId;
@@ -164,8 +164,9 @@ export default class EntradaModel extends Entity {
     }
 
     static toMap(row) {
+        const pedidoCompraId = row.pedidoCompraId ?? row.PedidoCompraId ?? null;
         return new EntradaModel(
-            Number(row.id ?? row.Id), Number(row.pedidoCompraId ?? row.PedidoCompraId),
+            Number(row.id ?? row.Id), pedidoCompraId === null ? null : Number(pedidoCompraId),
             Number(row.funcionarioId ?? row.FuncionarioId), row.funcionarioNome ?? row.FuncionarioNome ?? "",
             row.dataEntrada ?? row.DataEntrada, row.observacao ?? row.Observacao ?? null,
             row.situacao ?? row.Situacao, []

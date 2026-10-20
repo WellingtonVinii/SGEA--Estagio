@@ -56,7 +56,8 @@ const itemPedidoCompra = {
         produtoId: { type: 'integer', minimum: 1, example: 1 },
         produtoNome: { type: 'string', example: 'Papel sulfite A4' },
         quantidade: { type: 'integer', minimum: 1, example: 10 },
-        quantidadeRecebida: { type: 'integer', minimum: 0, example: 4 },
+        quantidadeAtendida: { type: 'integer', minimum: 0, example: 4 },
+        quantidadeRecebida: { type: 'integer', minimum: 0, example: 4, description: 'Alias de quantidadeAtendida usado pelo frontend.' },
         quantidadePendente: { type: 'integer', minimum: 0, example: 6 },
         produtoAtivo: { type: 'boolean', example: true }
     }
@@ -81,7 +82,7 @@ const entrada = {
     type: 'object',
     properties: {
         id: { type: 'integer', example: 1 },
-        pedidoCompraId: { type: 'integer', example: 1 },
+        pedidoCompraId: { type: 'integer', nullable: true, example: 1 },
         funcionarioId: { type: 'integer', example: 1 },
         funcionarioNome: { type: 'string', example: 'Maria da Silva' },
         dataEntrada: { type: 'string', format: 'date' },
@@ -98,9 +99,9 @@ const entrada = {
 };
 
 const dadosEntrada = {
-    type: 'object', additionalProperties: false, required: ['pedidoCompraId', 'itens'],
+    type: 'object', additionalProperties: false, required: ['itens'],
     properties: {
-        pedidoCompraId: { type: 'integer', minimum: 1 },
+        pedidoCompraId: { type: 'integer', minimum: 1, nullable: true, description: 'Opcional para entradas avulsas.' },
         dataEntrada: { type: 'string', format: 'date', nullable: true, description: 'Entre um mês atrás e a data atual; no cadastro, a omissão usa a data atual.' },
         observacao: { type: 'string', nullable: true, maxLength: 500 },
         itens: { type: 'array', minItems: 1, items: {
