@@ -131,6 +131,44 @@ const dadosPedidoCompra = {
     }
 };
 
+const itemSaida = {
+    type: 'object', properties: {
+        produtoId: { type: 'integer', example: 1 }, produtoNome: { type: 'string', example: 'Papel A4' },
+        quantidade: { type: 'integer', example: 8 },
+        lotes: { type: 'array', items: { type: 'object', properties: {
+            loteId: { type: 'integer', example: 1 }, codigoLote: { type: 'string', example: 'L001' },
+            dataValidade: { type: 'string', format: 'date', nullable: true }, quantidade: { type: 'integer', example: 5 }
+        } } }
+    }
+};
+
+const saida = {
+    type: 'object', properties: {
+        id: { type: 'integer', example: 1 }, dataSaida: { type: 'string', format: 'date-time' },
+        observacao: { type: 'string', nullable: true, maxLength: 255 },
+        funcionarioId: { type: 'integer' }, funcionarioNome: { type: 'string' },
+        destinatarioId: { type: 'integer' }, destinatarioNome: { type: 'string' },
+        produtos: { type: 'array', items: itemSaida }, quantidadeProdutos: { type: 'integer' }, totalUnidades: { type: 'integer' }
+    }
+};
+
+const dadosSaida = {
+    type: 'object', additionalProperties: false, required: ['destinatarioId', 'produtos'],
+    properties: {
+        destinatarioId: { type: 'integer', minimum: 1 }, observacao: { type: 'string', nullable: true, maxLength: 255 },
+        produtos: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false,
+            required: ['produtoId', 'quantidade', 'lotes'], properties: {
+                produtoId: { type: 'integer', minimum: 1 }, quantidade: { type: 'integer', minimum: 1 },
+                lotes: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false,
+                    required: ['loteId', 'quantidade'], properties: {
+                        loteId: { type: 'integer', minimum: 1 }, quantidade: { type: 'integer', minimum: 1 }
+                    } }
+                }
+            }
+        } }
+    }
+};
+
 const resposta = (descricao, schema) => ({
     description: descricao,
     content: { 'application/json': { schema } }
@@ -146,6 +184,7 @@ const idProduto = parametroId('Id do produto');
 const idFuncionario = parametroId('Id do funcionário');
 const idPedido = parametroId('Id do pedido de compra');
 const idEntrada = parametroId('Id da entrada');
+const idSaida = parametroId('Id da saída');
 
 export default {
     openapi: '3.0.3',
@@ -159,7 +198,9 @@ export default {
         { name: 'Categorias' },
         { name: 'Produtos' },
         { name: 'Funcionários' },
-        { name: 'Pedidos de compra' }
+        { name: 'Pedidos de compra' },
+        { name: 'Entradas' },
+        { name: 'Saídas' }
     ],
     components: {
         securitySchemes: {
@@ -552,6 +593,34 @@ export default {
                     200: resposta('Entrada cancelada', entrada), 404: resposta('Entrada não encontrada', erro),
                     409: resposta('Cancelamento deixaria saldo negativo', erro)
                 }
+            }
+        },
+        '/saidas': {
+            get: {
+                tags: ['Saídas'], summary: 'Listar saídas',
+                parameters: [{ name: 'busca', in: 'query', schema: { type: 'string', maxLength: 150 } }],
+                responses: { 200: resposta('Saídas encontradas', { type: 'array', items: saida }) }
+            },
+            post: {
+                tags: ['Saídas'], summary: 'Registrar saída e descontar o estoque',
+                description: 'Valida produtos e lotes e grava toda a movimentação em uma única transação.',
+                requestBody: { required: true, content: { 'application/json': { schema: dadosSaida } } },
+                responses: {
+                    201: resposta('Saída registrada', saida), 400: resposta('Dados inválidos', erro),
+                    403: resposta('Perfil sem permissão', erro), 409: resposta('Estoque ou lote incompatível', erro)
+                }
+            }
+        },
+        '/saidas/destinatarios': {
+            get: {
+                tags: ['Saídas'], summary: 'Listar funcionários ativos para recebimento',
+                responses: { 200: resposta('Funcionários encontrados', { type: 'array', items: funcionario }) }
+            }
+        },
+        '/saidas/{id}': {
+            get: {
+                tags: ['Saídas'], summary: 'Consultar detalhes da saída', parameters: [idSaida],
+                responses: { 200: resposta('Saída encontrada', saida), 404: resposta('Saída não encontrada', erro) }
             }
         }
     }
