@@ -87,7 +87,6 @@ const entrada = {
         funcionarioNome: { type: 'string', example: 'Maria da Silva' },
         dataEntrada: { type: 'string', format: 'date' },
         observacao: { type: 'string', nullable: true, maxLength: 500 },
-        situacao: { type: 'string', enum: ['Ativa', 'Cancelada'] },
         itens: { type: 'array', items: {
             type: 'object', properties: {
                 id: { type: 'integer' }, produtoId: { type: 'integer' }, produtoNome: { type: 'string' },
@@ -169,6 +168,41 @@ const dadosSaida = {
     }
 };
 
+const itemAjuste = {
+    type: 'object', properties: {
+        id: { type: 'integer' }, produtoId: { type: 'integer' }, produtoNome: { type: 'string' },
+        loteId: { type: 'integer' }, codigoLote: { type: 'string' },
+        dataValidade: { type: 'string', format: 'date', nullable: true },
+        quantidadeAnterior: { type: 'integer', minimum: 0 }, quantidadeFisica: { type: 'integer', minimum: 0 },
+        diferenca: { type: 'integer' }, justificativa: { type: 'string', maxLength: 255 }
+    }
+};
+
+const ajusteEstoque = {
+    type: 'object', properties: {
+        id: { type: 'integer' }, dataHora: { type: 'string', format: 'date-time' },
+        funcionarioId: { type: 'integer' }, funcionarioNome: { type: 'string' },
+        solicitanteId: { type: 'integer', nullable: true }, solicitanteNome: { type: 'string', nullable: true },
+        itens: { type: 'array', items: itemAjuste }, quantidadeItens: { type: 'integer' },
+        totalDiferenca: { type: 'integer', minimum: 0 }
+    }
+};
+
+const dadosAjusteEstoque = {
+    type: 'object', additionalProperties: false, required: ['solicitanteId', 'itens'], properties: {
+        solicitanteId: { type: 'integer', minimum: 1, description: 'Funcionário ativo que solicitou o ajuste.' },
+        itens: { type: 'array', minItems: 1, items: {
+            type: 'object', additionalProperties: false,
+            required: ['produtoId', 'loteId', 'diferenca', 'justificativa'],
+            properties: {
+                produtoId: { type: 'integer', minimum: 1 }, loteId: { type: 'integer', minimum: 1 },
+                diferenca: { type: 'integer', not: { enum: [0] }, description: 'Quantidade a acrescentar (+5) ou retirar (-5) do lote.' },
+                justificativa: { type: 'string', minLength: 1, maxLength: 255 }
+            }
+        } }
+    }
+};
+
 const resposta = (descricao, schema) => ({
     description: descricao,
     content: { 'application/json': { schema } }
@@ -185,6 +219,7 @@ const idFuncionario = parametroId('Id do funcionário');
 const idPedido = parametroId('Id do pedido de compra');
 const idEntrada = parametroId('Id da entrada');
 const idSaida = parametroId('Id da saída');
+const idAjuste = parametroId('Id do ajuste de estoque');
 
 export default {
     openapi: '3.0.3',
@@ -200,7 +235,10 @@ export default {
         { name: 'Funcionários' },
         { name: 'Pedidos de compra' },
         { name: 'Entradas' },
-        { name: 'Saídas' }
+        { name: 'Saídas' },
+        { name: 'Ajustes de estoque' },
+        { name: 'Estoque' },
+        { name: 'Histórico' }
     ],
     components: {
         securitySchemes: {
@@ -558,7 +596,8 @@ export default {
                 tags: ['Entradas'], summary: 'Listar entradas',
                 parameters: [
                     { name: 'busca', in: 'query', schema: { type: 'string', maxLength: 150 } },
-                    { name: 'situacao', in: 'query', schema: { type: 'string', enum: ['Todas', 'Ativa', 'Cancelada'], default: 'Todas' } }
+                    { name: 'dataInicio', in: 'query', schema: { type: 'string', format: 'date' } },
+                    { name: 'dataFim', in: 'query', schema: { type: 'string', format: 'date' } }
                 ],
                 responses: { 200: resposta('Entradas encontradas', { type: 'array', items: entrada }) }
             },
@@ -584,21 +623,25 @@ export default {
                     200: resposta('Entrada alterada', entrada), 400: resposta('Dados inválidos', erro),
                     404: resposta('Entrada não encontrada', erro), 409: resposta('Alteração incompatível com os saldos', erro)
                 }
-            }
-        },
-        '/entradas/{id}/cancelar': {
-            patch: {
-                tags: ['Entradas'], summary: 'Cancelar entrada e reverter o estoque', parameters: [idEntrada],
+            },
+            delete: {
+                tags: ['Entradas'], summary: 'Excluir entrada, reverter o estoque e remover lotes sem outras movimentações',
+                parameters: [idEntrada],
                 responses: {
-                    200: resposta('Entrada cancelada', entrada), 404: resposta('Entrada não encontrada', erro),
-                    409: resposta('Cancelamento deixaria saldo negativo', erro)
+                    200: resposta('Entrada excluída', { type: 'object', properties: {
+                        id: { type: 'integer' }, lotesRemovidos: { type: 'array', items: { type: 'integer' } }
+                    } }),
+                    404: resposta('Entrada não encontrada', erro),
+                    409: resposta('Parte do estoque recebido já saiu do lote', erro)
                 }
             }
         },
         '/saidas': {
             get: {
                 tags: ['Saídas'], summary: 'Listar saídas',
-                parameters: [{ name: 'busca', in: 'query', schema: { type: 'string', maxLength: 150 } }],
+                parameters: [{ name: 'busca', in: 'query', schema: { type: 'string', maxLength: 150 } },
+                    { name: 'dataInicio', in: 'query', schema: { type: 'string', format: 'date' } },
+                    { name: 'dataFim', in: 'query', schema: { type: 'string', format: 'date' } }],
                 responses: { 200: resposta('Saídas encontradas', { type: 'array', items: saida }) }
             },
             post: {
@@ -621,6 +664,94 @@ export default {
             get: {
                 tags: ['Saídas'], summary: 'Consultar detalhes da saída', parameters: [idSaida],
                 responses: { 200: resposta('Saída encontrada', saida), 404: resposta('Saída não encontrada', erro) }
+            }
+        },
+        '/ajustes': {
+            get: {
+                tags: ['Ajustes de estoque'], summary: 'Listar o histórico imutável de ajustes',
+                parameters: [{ name: 'busca', in: 'query', schema: { type: 'string', maxLength: 150 } }],
+                responses: {
+                    200: resposta('Ajustes encontrados', { type: 'array', items: ajusteEstoque }),
+                    403: resposta('Perfil sem permissão', erro)
+                }
+            },
+            post: {
+                tags: ['Ajustes de estoque'], summary: 'Registrar ajuste somando ou subtraindo a diferença nos lotes',
+                description: 'Disponível para ADM e Funcionário do Estoque. Valida e atualiza todos os lotes em uma única transação.',
+                requestBody: { required: true, content: { 'application/json': { schema: dadosAjusteEstoque } } },
+                responses: {
+                    201: resposta('Ajuste registrado', ajusteEstoque), 400: resposta('Dados inválidos', erro),
+                    403: resposta('Perfil sem permissão', erro), 409: resposta('Produto ou lote incompatível', erro)
+                }
+            }
+        },
+        '/ajustes/funcionarios': {
+            get: {
+                tags: ['Ajustes de estoque'], summary: 'Listar funcionários ativos que podem solicitar ajustes',
+                responses: { 200: resposta('Funcionários encontrados', { type: 'array', items: funcionario }) }
+            }
+        },
+        '/ajustes/{id}': {
+            get: {
+                tags: ['Ajustes de estoque'], summary: 'Consultar detalhes de um ajuste', parameters: [idAjuste],
+                responses: { 200: resposta('Ajuste encontrado', ajusteEstoque), 404: resposta('Ajuste não encontrado', erro) }
+            }
+        },
+        '/estoque': {
+            get: {
+                tags: ['Estoque'], summary: 'Consultar o estoque atual dos produtos ativos',
+                description: 'Disponível para ADM e Funcionário do Estoque. A quantidade total considera todos os lotes; o período de validade filtra os lotes exibidos e os produtos que possuem lotes nesse período.',
+                parameters: [
+                    { name: 'nome', in: 'query', schema: { type: 'string', maxLength: 150 } },
+                    { name: 'categoriaId', in: 'query', schema: { type: 'integer', minimum: 1 } },
+                    { name: 'validadeInicio', in: 'query', schema: { type: 'string', format: 'date' } },
+                    { name: 'validadeFim', in: 'query', schema: { type: 'string', format: 'date' } }
+                ],
+                responses: {
+                    200: resposta('Estoque encontrado', { type: 'array', items: { type: 'object', properties: {
+                        id: { type: 'integer' }, nome: { type: 'string' }, categoriaId: { type: 'integer' },
+                        categoriaNome: { type: 'string' }, quantidadeTotal: { type: 'integer' }, estoqueZerado: { type: 'boolean' },
+                        lotesVencidos: { type: 'integer' }, lotesProximosVencimento: { type: 'integer' },
+                        lotes: { type: 'array', items: { type: 'object', properties: {
+                            id: { type: 'integer' }, codigoLote: { type: 'string' }, quantidadeDisponivel: { type: 'integer' },
+                            dataValidade: { type: 'string', format: 'date', nullable: true },
+                            alerta: { type: 'string', nullable: true, enum: ['Lote vencido', 'Próximo do vencimento', null] }
+                        } } }
+                    } } }),
+                    400: resposta('Filtros ou período de validade inválidos', erro)
+                }
+            }
+        },
+        '/historico': {
+            get: {
+                tags: ['Histórico'], summary: 'Consultar o histórico de entradas, saídas e ajustes',
+                description: 'Movimentações da mais recente para a mais antiga. Quantidades positivas aumentam o estoque e negativas reduzem.',
+                parameters: [
+                    { name: 'dataInicio', in: 'query', schema: { type: 'string', format: 'date' } },
+                    { name: 'dataFim', in: 'query', schema: { type: 'string', format: 'date' } },
+                    { name: 'produto', in: 'query', schema: { type: 'string', maxLength: 150 } },
+                    { name: 'funcionarioId', in: 'query', schema: { type: 'integer', minimum: 1 } },
+                    { name: 'tipo', in: 'query', schema: { type: 'string', enum: ['Entrada', 'Saída', 'Ajuste'] } }
+                ],
+                responses: {
+                    200: resposta('Movimentações encontradas', { type: 'array', items: { type: 'object', properties: {
+                        tipo: { type: 'string', enum: ['Entrada', 'Saída', 'Ajuste'] }, id: { type: 'integer' },
+                        dataHora: { type: 'string' }, possuiHora: { type: 'boolean' }, funcionarioNome: { type: 'string' },
+                        complementoRotulo: { type: 'string' }, complemento: { type: 'string' }, observacao: { type: 'string', nullable: true },
+                        totalUnidades: { type: 'integer' },
+                        itens: { type: 'array', items: { type: 'object', properties: {
+                            produtoNome: { type: 'string' }, codigoLote: { type: 'string' }, dataValidade: { type: 'string', nullable: true },
+                            quantidade: { type: 'integer' }, justificativa: { type: 'string', nullable: true }
+                        } } }
+                    } } }),
+                    400: resposta('Filtros inválidos', erro)
+                }
+            }
+        },
+        '/historico/funcionarios': {
+            get: {
+                tags: ['Histórico'], summary: 'Listar funcionários que já registraram movimentações',
+                responses: { 200: resposta('Funcionários encontrados', { type: 'array', items: { type: 'object', properties: { id: { type: 'integer' }, nome: { type: 'string' } } } }) }
             }
         }
     }

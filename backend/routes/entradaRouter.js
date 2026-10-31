@@ -12,6 +12,6 @@ router.get("/", (req, res, next) => new EntradaController().listar(req, res, nex
 router.get("/:id", (req, res, next) => new EntradaController().buscar(req, res, next));
 router.post("/", (req, res, next) => new EntradaController().cadastrar(req, res, next));
 router.put("/:id", (req, res, next) => new EntradaController().alterar(req, res, next));
-router.patch("/:id/cancelar", (req, res, next) => new EntradaController().cancelar(req, res, next));
+router.delete("/:id", (req, res, next) => new EntradaController().excluir(req, res, next));
 
 export default router;

@@ -16,8 +16,11 @@ export default class SaidaController {
     async listar(req, res, next) {
         try {
             const busca = req.query?.busca === undefined ? "" : typeof req.query.busca === "string" ? req.query.busca.trim() : null;
-            if (busca === null || busca.length > 150) return res.status(400).json({ erro: "Informe uma busca válida." });
-            return res.json(await this.#model.listar(this.#banco, busca));
+            const periodo = this.#periodo(req.query?.dataInicio, req.query?.dataFim);
+            if (busca === null || busca.length > 150 || !periodo) {
+                return res.status(400).json({ erro: "Informe uma busca válida e um período com data inicial anterior ou igual à final." });
+            }
+            return res.json(await this.#model.listar(this.#banco, busca, periodo.dataInicio, periodo.dataFim));
         } catch (erro) { next(erro); }
     }
 
@@ -119,6 +122,22 @@ export default class SaidaController {
             produtos.push({ produtoId, quantidade, lotes });
         }
         return { destinatarioId, observacao, produtos };
+    }
+
+    #periodo(inicio, fim) {
+        const dataInicio = this.#data(inicio);
+        const dataFim = this.#data(fim);
+        if (dataInicio === undefined || dataFim === undefined) return null;
+        if (dataInicio && dataFim && dataInicio > dataFim) return null;
+        return { dataInicio, dataFim };
+    }
+
+    #data(valor) {
+        if (valor === undefined || valor === "") return null;
+        if (typeof valor !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(valor)) return undefined;
+        const [ano, mes, dia] = valor.split("-").map(Number);
+        const data = new Date(Date.UTC(ano, mes - 1, dia));
+        return data.getUTCFullYear() === ano && data.getUTCMonth() === mes - 1 && data.getUTCDate() === dia ? valor : undefined;
     }
 
     #observacao(valor) {

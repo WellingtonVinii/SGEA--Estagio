@@ -9,6 +9,9 @@ import usuarioRouter from './routes/usuarioRouter.js';
 import pedidoCompraRouter from './routes/pedidoCompraRouter.js';
 import entradaRouter from './routes/entradaRouter.js';
 import saidaRouter from './routes/saidaRouter.js';
+import ajusteEstoqueRouter from './routes/ajusteEstoqueRouter.js';
+import estoqueRouter from './routes/estoqueRouter.js';
+import historicoRouter from './routes/historicoRouter.js';
 import autenticarToken, { autorizarPerfis } from './middleware/autenticacaoMiddleware.js';
 import swaggerDocument from './swagger-document.js';
 
@@ -25,6 +28,9 @@ server.use('/usuarios', somenteAdm, usuarioRouter);
 server.use('/pedidos', pedidoCompraRouter);
 server.use('/entradas', entradaRouter);
 server.use('/saidas', saidaRouter);
+server.use('/ajustes', ajusteEstoqueRouter);
+server.use('/estoque', estoqueRouter);
+server.use('/historico', historicoRouter);
 server.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 server.use((erro, req, res, next) => {
     console.error(erro);

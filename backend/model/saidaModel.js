@@ -13,20 +13,30 @@ export default class SaidaModel extends Entity {
         this.produtos = produtos;
     }
 
-    async listar(banco, busca = "") {
+    async listar(banco, busca = "", dataInicio = null, dataFim = null) {
+        const filtros = [];
         const valores = [];
-        let where = "";
+        if (dataInicio) {
+            filtros.push("s.DataSaida >= ?");
+            valores.push(dataInicio);
+        }
+        if (dataFim) {
+            // DataSaida guarda a hora, então o dia final inteiro entra no período.
+            filtros.push("s.DataSaida < DATE_ADD(?, INTERVAL 1 DAY)");
+            valores.push(dataFim);
+        }
         if (busca) {
             const termo = `%${busca}%`;
-            where = `WHERE CAST(s.Id AS CHAR) LIKE ? OR responsavel.Nome LIKE ? OR destinatario.Nome LIKE ?
+            filtros.push(`(CAST(s.Id AS CHAR) LIKE ? OR responsavel.Nome LIKE ? OR destinatario.Nome LIKE ?
                 OR s.Observacao LIKE ? OR EXISTS (
                     SELECT 1 FROM ItemSaida buscaItem
                     JOIN Lote buscaLote ON buscaLote.Id = buscaItem.LoteId
                     JOIN Produto buscaProduto ON buscaProduto.Id = buscaLote.ProdutoId
                     WHERE buscaItem.SaidaId = s.Id AND buscaProduto.Nome LIKE ?
-                )`;
+                ))`);
             valores.push(termo, termo, termo, termo, termo);
         }
+        const where = filtros.length ? `WHERE ${filtros.join(" AND ")}` : "";
         const rows = await banco.ExecutaComando(
             `SELECT s.Id AS id, DATE_FORMAT(s.DataSaida, '%Y-%m-%d %H:%i:%s') AS dataSaida,
                     s.Observacao AS observacao, s.FuncionarioId AS funcionarioId,

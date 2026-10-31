@@ -165,7 +165,6 @@ export default class PedidoCompraModel extends Entity {
                       JOIN ItemEntrada ie ON ie.EntradaId = e.Id
                       JOIN Lote l ON l.Id = ie.LoteId
                      WHERE e.PedidoCompraId = ip.PedidoCompraId
-                       AND e.Situacao = 'Ativa'
                        AND l.ProdutoId = ip.ProdutoId
                 ), 0))
               WHERE ip.PedidoCompraId = ?`,

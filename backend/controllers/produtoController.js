@@ -54,6 +54,9 @@ export default class ProdutoController {
                     erro: "Informe nome, categoriaId, quantidadeLote inteira e positiva, código do lote com até 50 caracteres e uma data válida no formato AAAA-MM-DD, quando aplicável."
                 });
             }
+            if (dados.codigoLote !== "1" && !dados.dataValidade) {
+                return res.status(400).json({ erro: "Informe a data de validade dos lotes com código diferente de 1." });
+            }
 
             const produto = new ProdutoModel(0, dados.nome, true, dados.categoriaId);
             const lote = new LoteModel(

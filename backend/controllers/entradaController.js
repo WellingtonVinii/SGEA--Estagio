@@ -19,11 +19,11 @@ export default class EntradaController {
     async listar(req, res, next) {
         try {
             const busca = req.query?.busca === undefined ? "" : typeof req.query.busca === "string" ? req.query.busca.trim() : null;
-            const situacao = req.query?.situacao ?? "Todas";
-            if (busca === null || busca.length > 150 || !["Todas", "Ativa", "Cancelada"].includes(situacao)) {
-                return res.status(400).json({ erro: "Informe uma busca válida e situação Todas, Ativa ou Cancelada." });
+            const periodo = this.#periodo(req.query?.dataInicio, req.query?.dataFim);
+            if (busca === null || busca.length > 150 || !periodo) {
+                return res.status(400).json({ erro: "Informe uma busca válida e um período com data inicial anterior ou igual à final." });
             }
-            return res.json(await this.#model.listar(this.#banco, busca, situacao));
+            return res.json(await this.#model.listar(this.#banco, busca, periodo.dataInicio, periodo.dataFim));
         } catch (erro) { next(erro); }
     }
 
@@ -46,7 +46,7 @@ export default class EntradaController {
         return this.#salvar(req, res, next, id);
     }
 
-    async cancelar(req, res, next) {
+    async excluir(req, res, next) {
         let transacaoAberta = false;
         try {
             const id = this.#idRota(req.params.id);
@@ -57,21 +57,22 @@ export default class EntradaController {
             transacaoAberta = true;
             const entrada = await this.#model.buscarPorId(this.#banco, id, true);
             if (!entrada) return await this.#rollbackResposta(res, 404, "Entrada não encontrada.");
-            if (entrada.situacao !== "Ativa") return await this.#rollbackResposta(res, 409, "A entrada já está cancelada.");
 
             const atualizacao = await this.#estoque.reverterMovimentacao(this.#banco, entrada.itens, "entrada");
             if (atualizacao.tipo === "saldo_insuficiente") {
-                return await this.#rollbackResposta(res, 409, "A entrada não pode ser cancelada porque parte do estoque recebido já foi consumida.");
+                return await this.#rollbackResposta(res, 409, "A entrada não pode ser excluída porque parte do estoque recebido já saiu do lote.");
             }
-            if (atualizacao.tipo !== "ok" || !await this.#model.cancelar(this.#banco, id)) {
-                throw new Error("Não foi possível cancelar a entrada.");
+            if (atualizacao.tipo !== "ok" || !await this.#model.excluir(this.#banco, id)) {
+                throw new Error("Não foi possível excluir a entrada.");
             }
+            // Lotes que só existiam por causa desta entrada deixam de existir junto com ela.
+            const lotesRemovidos = await this.#estoque.removerLotesSemMovimentacao(this.#banco, entrada.itens.map(item => item.loteId));
             if (entrada.pedidoCompraId) {
                 await this.#pedidos.atualizarSituacaoRecebimento(this.#banco, entrada.pedidoCompraId);
             }
             await this.#banco.Commit();
             transacaoAberta = false;
-            return res.json(await this.#model.buscarPorId(this.#banco, id));
+            return res.json({ id, lotesRemovidos });
         } catch (erro) { await this.#tratarErro(erro, transacaoAberta, res, next); }
     }
 
@@ -83,12 +84,14 @@ export default class EntradaController {
             if (!dados || !funcionarioId) {
                 return res.status(400).json({ erro: "Informe data, observação e itens válidos para a entrada." });
             }
+            if (dados.itens.some(item => !item.loteId && item.codigoLote !== "1" && !item.dataValidade)) {
+                return res.status(400).json({ erro: "Informe a data de validade dos lotes com código diferente de 1." });
+            }
 
             await this.#banco.AbreTransacao();
             transacaoAberta = true;
             const atual = id === null ? null : await this.#model.buscarPorId(this.#banco, id, true);
             if (id !== null && !atual) return await this.#rollbackResposta(res, 404, "Entrada não encontrada.");
-            if (atual && atual.situacao !== "Ativa") return await this.#rollbackResposta(res, 409, "Entradas canceladas não podem ser alteradas.");
 
             const idsPedidos = [...new Set([atual?.pedidoCompraId, dados.pedidoCompraId]
                 .filter(pedidoId => pedidoId !== null && pedidoId !== undefined))].sort((a, b) => a - b);
@@ -132,10 +135,15 @@ export default class EntradaController {
 
             const entrada = new EntradaModel(
                 id ?? 0, dados.pedidoCompraId, atual?.funcionarioId ?? funcionarioId,
-                atual?.funcionarioNome ?? "", dados.dataEntrada, dados.observacao, "Ativa", resolvidos.itens
+                atual?.funcionarioNome ?? "", dados.dataEntrada, dados.observacao, resolvidos.itens
             );
             if (id === null) await this.#model.cadastrar(this.#banco, entrada);
-            else await this.#model.atualizar(this.#banco, entrada);
+            else {
+                await this.#model.atualizar(this.#banco, entrada);
+                const lotesAtuais = new Set(resolvidos.itens.map(item => item.loteId));
+                await this.#estoque.removerLotesSemMovimentacao(this.#banco,
+                    atual.itens.map(item => item.loteId).filter(loteId => !lotesAtuais.has(loteId)));
+            }
 
             if (atual?.pedidoCompraId && atual.pedidoCompraId !== entrada.pedidoCompraId) {
                 await this.#pedidos.atualizarSituacaoRecebimento(this.#banco, atual.pedidoCompraId);
@@ -244,6 +252,14 @@ export default class EntradaController {
     #formatarData(data) {
         return [data.getFullYear(), String(data.getMonth() + 1).padStart(2, "0"), String(data.getDate()).padStart(2, "0")].join("-");
     }
+    #periodo(inicio, fim) {
+        const dataInicio = this.#dataOpcional(inicio);
+        const dataFim = this.#dataOpcional(fim);
+        if (dataInicio === undefined || dataFim === undefined) return null;
+        if (dataInicio && dataFim && dataInicio > dataFim) return null;
+        return { dataInicio, dataFim };
+    }
+
     #observacao(valor) {
         if (valor === undefined || valor === null || valor === "") return null;
         if (typeof valor !== "string") return undefined;

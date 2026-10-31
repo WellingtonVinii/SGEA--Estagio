@@ -1,7 +1,7 @@
 import Entity from "./entity.js";
 
 export default class EntradaModel extends Entity {
-    constructor(id = 0, pedidoCompraId = null, funcionarioId = 0, funcionarioNome = "", dataEntrada = "", observacao = null, situacao = "Ativa", itens = []) {
+    constructor(id = 0, pedidoCompraId = null, funcionarioId = 0, funcionarioNome = "", dataEntrada = "", observacao = null, itens = []) {
         super();
         this.id = id;
         this.pedidoCompraId = pedidoCompraId;
@@ -9,16 +9,19 @@ export default class EntradaModel extends Entity {
         this.funcionarioNome = funcionarioNome;
         this.dataEntrada = dataEntrada;
         this.observacao = observacao;
-        this.situacao = situacao;
         this.itens = itens;
     }
 
-    async listar(banco, busca = "", situacao = "Todas") {
+    async listar(banco, busca = "", dataInicio = null, dataFim = null) {
         const filtros = [];
         const valores = [];
-        if (situacao !== "Todas") {
-            filtros.push("e.Situacao = ?");
-            valores.push(situacao);
+        if (dataInicio) {
+            filtros.push("e.DataEntrada >= ?");
+            valores.push(dataInicio);
+        }
+        if (dataFim) {
+            filtros.push("e.DataEntrada <= ?");
+            valores.push(dataFim);
         }
         if (busca) {
             const termo = `%${busca}%`;
@@ -36,7 +39,7 @@ export default class EntradaModel extends Entity {
             `SELECT e.Id AS id, e.PedidoCompraId AS pedidoCompraId,
                     e.FuncionarioId AS funcionarioId, f.Nome AS funcionarioNome,
                     DATE_FORMAT(e.DataEntrada, '%Y-%m-%d') AS dataEntrada,
-                    e.Observacao AS observacao, e.Situacao AS situacao,
+                    e.Observacao AS observacao,
                     COUNT(ie.Id) AS quantidadeItens,
                     COALESCE(SUM(ie.Quantidade), 0) AS totalUnidades
                FROM Entrada e
@@ -44,7 +47,7 @@ export default class EntradaModel extends Entity {
           LEFT JOIN ItemEntrada ie ON ie.EntradaId = e.Id
               ${where}
            GROUP BY e.Id, e.PedidoCompraId, e.FuncionarioId, f.Nome,
-                    e.DataEntrada, e.Observacao, e.Situacao
+                    e.DataEntrada, e.Observacao
            ORDER BY e.DataEntrada DESC, e.Id DESC`,
             valores
         );
@@ -60,7 +63,7 @@ export default class EntradaModel extends Entity {
             `SELECT e.Id AS id, e.PedidoCompraId AS pedidoCompraId,
                     e.FuncionarioId AS funcionarioId, f.Nome AS funcionarioNome,
                     DATE_FORMAT(e.DataEntrada, '%Y-%m-%d') AS dataEntrada,
-                    e.Observacao AS observacao, e.Situacao AS situacao
+                    e.Observacao AS observacao
                FROM Entrada e
                JOIN Funcionario f ON f.Id = e.FuncionarioId
               WHERE e.Id = ?${bloquear ? " FOR UPDATE" : ""}`,
@@ -101,7 +104,7 @@ export default class EntradaModel extends Entity {
                FROM Entrada e
                JOIN ItemEntrada ie ON ie.EntradaId = e.Id
                JOIN Lote l ON l.Id = ie.LoteId
-              WHERE e.PedidoCompraId = ? AND e.Situacao = 'Ativa'${exclusao}
+              WHERE e.PedidoCompraId = ?${exclusao}
            GROUP BY l.ProdutoId`,
             valores
         );
@@ -110,8 +113,8 @@ export default class EntradaModel extends Entity {
 
     async cadastrar(banco, entrada) {
         const id = await banco.ExecutaComandoLastInserted(
-            `INSERT INTO Entrada (PedidoCompraId, FuncionarioId, DataEntrada, Observacao, Situacao)
-                  VALUES (?, ?, ?, ?, 'Ativa')`,
+            `INSERT INTO Entrada (PedidoCompraId, FuncionarioId, DataEntrada, Observacao)
+                  VALUES (?, ?, ?, ?)`,
             [entrada.pedidoCompraId, entrada.funcionarioId, entrada.dataEntrada, entrada.observacao]
         );
         if (!id) return false;
@@ -124,7 +127,7 @@ export default class EntradaModel extends Entity {
         await banco.ExecutaComandoNonQuery(
             `UPDATE Entrada
                 SET PedidoCompraId = ?, DataEntrada = ?, Observacao = ?
-              WHERE Id = ? AND Situacao = 'Ativa'`,
+              WHERE Id = ?`,
             [entrada.pedidoCompraId, entrada.dataEntrada, entrada.observacao, entrada.id]
         );
         await this.substituirItens(banco, entrada.id, entrada.itens);
@@ -141,11 +144,9 @@ export default class EntradaModel extends Entity {
         }
     }
 
-    async cancelar(banco, id) {
-        return banco.ExecutaComandoNonQuery(
-            "UPDATE Entrada SET Situacao = 'Cancelada' WHERE Id = ? AND Situacao = 'Ativa'",
-            [id]
-        );
+    async excluir(banco, id) {
+        await banco.ExecutaComandoNonQuery("DELETE FROM ItemEntrada WHERE EntradaId = ?", [id]);
+        return banco.ExecutaComandoNonQuery("DELETE FROM Entrada WHERE Id = ?", [id]);
     }
 
     toJSON() {
@@ -156,7 +157,6 @@ export default class EntradaModel extends Entity {
             funcionarioNome: this.funcionarioNome,
             dataEntrada: this.dataEntrada,
             observacao: this.observacao,
-            situacao: this.situacao,
             itens: this.itens,
             quantidadeItens: this.itens.length,
             totalUnidades: this.itens.reduce((total, item) => total + item.quantidade, 0)
@@ -168,8 +168,7 @@ export default class EntradaModel extends Entity {
         return new EntradaModel(
             Number(row.id ?? row.Id), pedidoCompraId === null ? null : Number(pedidoCompraId),
             Number(row.funcionarioId ?? row.FuncionarioId), row.funcionarioNome ?? row.FuncionarioNome ?? "",
-            row.dataEntrada ?? row.DataEntrada, row.observacao ?? row.Observacao ?? null,
-            row.situacao ?? row.Situacao, []
+            row.dataEntrada ?? row.DataEntrada, row.observacao ?? row.Observacao ?? null, []
         );
     }
 }

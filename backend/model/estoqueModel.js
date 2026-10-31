@@ -14,24 +14,101 @@ export default class EstoqueModel {
 
     async atualizarPorAjuste(banco, itens) {
         if (!Array.isArray(itens) || !itens.length) return { tipo: "ajuste_invalido" };
-        const quantidades = new Map();
+        const deltas = new Map();
         for (const item of itens) {
             if (!Number.isSafeInteger(item.loteId) || item.loteId <= 0 ||
-                !Number.isSafeInteger(item.quantidadeFisica) || item.quantidadeFisica < 0 || quantidades.has(item.loteId)) {
+                !Number.isSafeInteger(item.diferenca) || item.diferenca === 0 || deltas.has(item.loteId)) {
                 return { tipo: "ajuste_invalido" };
             }
-            quantidades.set(item.loteId, item.quantidadeFisica);
+            deltas.set(item.loteId, item.diferenca);
         }
-        const ids = [...quantidades.keys()].sort((a, b) => a - b);
-        const rows = await this.#bloquearLotes(banco, ids);
-        if (rows.length !== ids.length) return { tipo: "lote_nao_encontrado" };
-        for (const row of rows) {
-            await banco.ExecutaComandoNonQuery(
-                "UPDATE Lote SET QuantidadeDisponivel = ? WHERE Id = ?",
-                [quantidades.get(Number(row.id)), Number(row.id)]
+        return this.aplicarDeltas(banco, deltas);
+    }
+
+    async consultarEstoque(banco, { nome = "", categoriaId = null, validadeInicio = null, validadeFim = null } = {}) {
+        const filtros = ["p.Ativo = 1"];
+        const valores = [];
+        if (nome) {
+            filtros.push("p.Nome LIKE ?");
+            valores.push(`%${nome}%`);
+        }
+        if (categoriaId) {
+            filtros.push("p.CategoriaId = ?");
+            valores.push(categoriaId);
+        }
+        const produtos = await banco.ExecutaComando(
+            `SELECT p.Id AS id, p.Nome AS nome, c.Id AS categoriaId, c.Nome AS categoriaNome,
+                    COALESCE((SELECT SUM(l.QuantidadeDisponivel) FROM Lote l WHERE l.ProdutoId = p.Id), 0) AS quantidadeTotal
+               FROM Produto p
+               JOIN Categoria c ON c.Id = p.CategoriaId
+              WHERE ${filtros.join(" AND ")}
+           ORDER BY p.Nome, p.Id`,
+            valores
+        );
+        if (!produtos.length) return [];
+
+        const lotes = await banco.ExecutaComando(
+            `SELECT l.Id AS id, l.ProdutoId AS produtoId, l.CodigoLote AS codigoLote,
+                    l.QuantidadeDisponivel AS quantidadeDisponivel,
+                    DATE_FORMAT(l.DataValidade, '%Y-%m-%d') AS dataValidade,
+                    DATEDIFF(l.DataValidade, CURDATE()) AS diasParaVencer
+               FROM Lote l
+              WHERE l.ProdutoId IN (?) AND l.QuantidadeDisponivel > 0
+           ORDER BY l.DataValidade IS NULL, l.DataValidade, l.Id`,
+            [produtos.map(produto => Number(produto.id))]
+        );
+        const filtrarValidade = Boolean(validadeInicio || validadeFim);
+        const lotesPorProduto = new Map();
+        for (const row of lotes) {
+            const dataValidade = row.dataValidade ?? null;
+            // Com período informado, só entram os lotes com validade dentro dele.
+            if (filtrarValidade && (!dataValidade ||
+                (validadeInicio && dataValidade < validadeInicio) || (validadeFim && dataValidade > validadeFim))) continue;
+            const dias = row.diasParaVencer === null ? null : Number(row.diasParaVencer);
+            const lote = {
+                id: Number(row.id),
+                codigoLote: row.codigoLote || "1",
+                quantidadeDisponivel: Number(row.quantidadeDisponivel),
+                dataValidade,
+                alerta: dias === null ? null : dias < 0 ? "Lote vencido" : dias <= 30 ? "Próximo do vencimento" : null
+            };
+            const produtoId = Number(row.produtoId);
+            lotesPorProduto.set(produtoId, [...(lotesPorProduto.get(produtoId) ?? []), lote]);
+        }
+
+        return produtos
+            .map(row => {
+                const lotesProduto = lotesPorProduto.get(Number(row.id)) ?? [];
+                const quantidadeTotal = Number(row.quantidadeTotal);
+                return {
+                    id: Number(row.id),
+                    nome: row.nome,
+                    categoriaId: Number(row.categoriaId),
+                    categoriaNome: row.categoriaNome,
+                    quantidadeTotal,
+                    estoqueZerado: quantidadeTotal === 0,
+                    lotesVencidos: lotesProduto.filter(lote => lote.alerta === "Lote vencido").length,
+                    lotesProximosVencimento: lotesProduto.filter(lote => lote.alerta === "Próximo do vencimento").length,
+                    lotes: lotesProduto
+                };
+            })
+            .filter(produto => !filtrarValidade || produto.lotes.length);
+    }
+
+    async removerLotesSemMovimentacao(banco, ids) {
+        const removidos = [];
+        for (const id of [...new Set(ids)].sort((a, b) => a - b)) {
+            const removido = await banco.ExecutaComandoNonQuery(
+                `DELETE FROM Lote
+                  WHERE Id = ? AND QuantidadeDisponivel = 0
+                    AND NOT EXISTS (SELECT 1 FROM ItemEntrada WHERE LoteId = ?)
+                    AND NOT EXISTS (SELECT 1 FROM ItemSaida WHERE LoteId = ?)
+                    AND NOT EXISTS (SELECT 1 FROM ItemAjusteEstoque WHERE LoteId = ?)`,
+                [id, id, id, id]
             );
+            if (removido) removidos.push(id);
         }
-        return { tipo: "ok" };
+        return removidos;
     }
 
     async buscarLotePorId(banco, id, produtoId) {
