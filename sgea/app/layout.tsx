@@ -1,10 +1,16 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "bootstrap/dist/css/bootstrap.min.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "SGEA | Sistema de Estoque Escolar",
   description: "Sistema de Gestão de Estoque Escolar",
+  applicationName: "SGEA",
+  appleWebApp: { capable: true, title: "SGEA", statusBarStyle: "default" },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#1768ce",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
